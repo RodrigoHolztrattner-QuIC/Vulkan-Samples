@@ -90,13 +90,8 @@ class OpenGLInterop : public ApiVulkanSample
 
 	struct SharedSync
 	{
-#if VK_USE_PLATFORM_ANDROID_KHR
-		VkFence     gl_ready{VK_NULL_HANDLE};
-#else
 		VkSemaphore gl_ready{VK_NULL_HANDLE};
 		VkSemaphore gl_complete{VK_NULL_HANDLE};
-#endif
-
 	} sharedSync;
 
 	std::unique_ptr<vkb::core::Buffer> vertex_buffer;
