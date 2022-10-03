@@ -39,8 +39,16 @@ target_sources(glad PRIVATE ${GLAD_SOURCES})
 target_include_directories(glad PUBLIC ${GLAD_DIR}/include)
 set_property(TARGET glad PROPERTY FOLDER "ThirdParty")
 
-# Only Compile on platforms that support glfw
-if (NOT (ANDROID OR DIRECT_TO_DISPLAY))
+if (ANDROID)
+target_link_libraries(glad
+                      android
+                      log 
+                      EGL
+                      GLESv2)
+endif()
+
+# Only Compile on platforms that support glfw or Android with EGL
+if (NOT DIRECT_TO_DISPLAY)
     add_sample_with_tags(
         ID ${FOLDER_NAME}
         CATEGORY ${CATEGORY_NAME}
@@ -51,10 +59,12 @@ if (NOT (ANDROID OR DIRECT_TO_DISPLAY))
             "opengl"
         LIBS
             glad
+            EGL
+            GLESv2
         FILES
             offscreen_context.h
             offscreen_context.cpp
         SHADER_FILES_GLSL
             "texture_loading/texture.vert"
             "texture_loading/texture.frag")
-endif()
+endif() 

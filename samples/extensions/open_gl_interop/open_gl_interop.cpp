@@ -31,6 +31,8 @@
 
 #include "offscreen_context.h"
 
+namespace
+{
 constexpr const char *OPENG_VERTEX_SHADER =
     R"SHADER(
 const vec4 VERTICES[] = vec4[](
@@ -46,7 +48,10 @@ void main() { gl_Position = VERTICES[gl_VertexID]; }
 // https://www.shadertoy.com/view/Xd23Dh
 constexpr const char *OPENGL_FRAGMENT_SHADER =
     R"SHADER(
-const vec4 iMouse = vec4(0.0); 
+
+precision mediump float;
+
+const vec4 iMouse = vec4(0.0);
 layout(location = 0) out vec4 outColor;
 layout(location = 0) uniform vec3 iResolution;
 layout(location = 1) uniform float iTime;
@@ -98,13 +103,50 @@ void mainImage( out vec4 fragColor, in vec2 fragCoord )
 void main() { mainImage(outColor, gl_FragCoord.xy); }
 )SHADER";
 
+bool GetSupportedExternalSemaphoreHandleType(VkPhysicalDevice physicalDeviceHandle, VkExternalSemaphoreHandleTypeFlagBits &outExternalHandleType)
+{
+	VkExternalSemaphoreHandleTypeFlagBits flags[] = {
+	    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
+	    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT,
+	    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT,
+	    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT,
+	    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
+
+	VkPhysicalDeviceExternalSemaphoreInfo zzzz{
+	    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO, nullptr};
+	VkExternalSemaphoreProperties aaaa{VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
+	                                   nullptr};
+
+	bool                                  found = false;
+	VkExternalSemaphoreHandleTypeFlagBits compatable_semaphore_type{};
+	for (size_t i = 0; i < 5; i++)
+	{
+		zzzz.handleType = flags[i];
+		vkGetPhysicalDeviceExternalSemaphorePropertiesKHR(physicalDeviceHandle, &zzzz, &aaaa);
+		if (aaaa.compatibleHandleTypes & flags[i] && aaaa.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT)
+		{
+			outExternalHandleType = flags[i];
+			return true;
+		}
+	}
+
+	return false;
+}
+
+} // namespace
+
 struct GLData
 {
 	// Shader
 	GLuint program{0};
 
 	// Semaphores
+
+#if VK_USE_PLATFORM_ANDROID_KHR
+    EGLSync gl_ready = nullptr;
+#else
 	GLuint gl_ready{0}, gl_complete{0};
+#endif
 
 	// Memory Object
 	GLuint mem{0};
@@ -130,6 +172,12 @@ OpenGLInterop::OpenGLInterop()
 
 	add_device_extension(HOST_SEMAPHORE_EXTENSION_NAME);
 	add_device_extension(HOST_MEMORY_EXTENSION_NAME);
+
+#if VK_USE_PLATFORM_ANDROID_KHR
+	add_instance_extension(VK_KHR_EXTERNAL_FENCE_CAPABILITIES_EXTENSION_NAME);
+	add_device_extension(VK_KHR_EXTERNAL_FENCE_EXTENSION_NAME);
+	add_device_extension(HOST_FENCE_EXTENSION_NAME);
+#endif
 }
 
 void OpenGLInterop::prepare_shared_resources()
@@ -138,62 +186,39 @@ void OpenGLInterop::prepare_shared_resources()
 	auto physicalDeviceHandle = device->get_gpu().get_handle();
 
 	{
-		VkExternalSemaphoreHandleTypeFlagBits flags[] = {
-		    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT,
-		    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT,
-		    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_KMT_BIT,
-		    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D12_FENCE_BIT,
-		    VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT};
-
-		VkPhysicalDeviceExternalSemaphoreInfo zzzz{
-		    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO, nullptr};
-		VkExternalSemaphoreProperties aaaa{VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES,
-		                                   nullptr};
-
-		bool                                  found = false;
-		VkExternalSemaphoreHandleTypeFlagBits compatable_semaphore_type;
-		for (size_t i = 0; i < 5; i++)
-		{
-			zzzz.handleType = flags[i];
-			vkGetPhysicalDeviceExternalSemaphorePropertiesKHR(physicalDeviceHandle, &zzzz, &aaaa);
-			if (aaaa.compatibleHandleTypes & flags[i] && aaaa.externalSemaphoreFeatures & VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT)
-			{
-				compatable_semaphore_type = flags[i];
-				found                     = true;
-				break;
-			}
-		}
-
-		if (!found)
+		bool semaphore_found = GetSupportedExternalSemaphoreHandleType(physicalDeviceHandle, external_semaphore_handle_type);
+		if (!semaphore_found)
 		{
 			throw;
 		}
 
+#if !VK_USE_PLATFORM_ANDROID_KHR
 		VkExportSemaphoreCreateInfo exportSemaphoreCreateInfo{
 		    VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO, nullptr,
-		    VkExternalSemaphoreHandleTypeFlags(compatable_semaphore_type)};
+		    VkExternalSemaphoreHandleTypeFlags(external_semaphore_handle_type)};
 		VkSemaphoreCreateInfo semaphoreCreateInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
 		                                          &exportSemaphoreCreateInfo};
 		VK_CHECK(vkCreateSemaphore(deviceHandle, &semaphoreCreateInfo, nullptr,
-		                           &sharedSemaphores.gl_complete));
+		                           &sharedSync.gl_complete));
 		VK_CHECK(vkCreateSemaphore(deviceHandle, &semaphoreCreateInfo, nullptr,
-		                           &sharedSemaphores.gl_ready));
+		                           &sharedSync.gl_ready));
+#endif
 
 #if WIN32
 		VkSemaphoreGetWin32HandleInfoKHR semaphoreGetHandleInfo{
 		    VK_STRUCTURE_TYPE_SEMAPHORE_GET_WIN32_HANDLE_INFO_KHR, nullptr,
-		    VK_NULL_HANDLE, compatable_semaphore_type};
-		semaphoreGetHandleInfo.semaphore = sharedSemaphores.gl_ready;
+		    VK_NULL_HANDLE, external_semaphore_handle_type};
+		semaphoreGetHandleInfo.semaphore = sharedSync.gl_ready;
 		VK_CHECK(vkGetSemaphoreWin32HandleKHR(deviceHandle, &semaphoreGetHandleInfo, &shareHandles.gl_ready));
-		semaphoreGetHandleInfo.semaphore = sharedSemaphores.gl_complete;
+		semaphoreGetHandleInfo.semaphore = sharedSync.gl_complete;
 		VK_CHECK(vkGetSemaphoreWin32HandleKHR(deviceHandle, &semaphoreGetHandleInfo, &shareHandles.gl_complete));
-#else
+#elif !VK_USE_PLATFORM_ANDROID_KHR
 		VkSemaphoreGetFdInfoKHR semaphoreGetFdInfo{
 		    VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, nullptr,
-		    VK_NULL_HANDLE, compatable_semaphore_type};
-		semaphoreGetFdInfo.semaphore = sharedSemaphores.gl_ready;
+		    VK_NULL_HANDLE, external_semaphore_handle_type};
+		semaphoreGetFdInfo.semaphore = sharedSync.gl_ready;
 		VK_CHECK(vkGetSemaphoreFdKHR(deviceHandle, &semaphoreGetFdInfo, &shareHandles.gl_ready));
-		semaphoreGetFdInfo.semaphore = sharedSemaphores.gl_complete;
+		semaphoreGetFdInfo.semaphore = sharedSync.gl_complete;
 		VK_CHECK(vkGetSemaphoreFdKHR(deviceHandle, &semaphoreGetFdInfo, &shareHandles.gl_complete));
 #endif
 	}
@@ -217,8 +242,32 @@ void OpenGLInterop::prepare_shared_resources()
 		VkMemoryRequirements memReqs{};
 		vkGetImageMemoryRequirements(device->get_handle(), sharedTexture.image, &memReqs);
 
+		const void* exportAllocInfoNext = nullptr;
+
+#if VK_USE_PLATFORM_ANDROID_KHR
+
+		VkExternalImageFormatProperties         external_image_format_properties{VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
+		VkImageFormatProperties2                image_format_properties{VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, &external_image_format_properties};
+		VkPhysicalDeviceExternalImageFormatInfo external_image_format_info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO};
+		VkPhysicalDeviceImageFormatInfo2        image_format_info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, &external_image_format_info};
+		image_format_info.format = VK_FORMAT_R8G8B8A8_UNORM;
+		image_format_info.type   = VK_IMAGE_TYPE_2D;
+		image_format_info.usage  = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+		vkGetPhysicalDeviceImageFormatProperties2(physicalDeviceHandle, &image_format_info, &image_format_properties);
+
+		VkMemoryDedicatedAllocateInfo dedicated_allocate_info{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
+		dedicated_allocate_info.image = sharedTexture.image;
+
+		if (external_image_format_properties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_DEDICATED_ONLY_BIT)
+		{
+			exportAllocInfoNext = &dedicated_allocate_info;
+		}
+
+#endif
+
 		VkExportMemoryAllocateInfo exportAllocInfo{
-		    VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, nullptr,
+		    VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, exportAllocInfoNext,
 		    VK_EXTERNAL_MEMORY_HANDLE_TYPE};
 		VkMemoryAllocateInfo memAllocInfo{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &exportAllocInfo};
 
@@ -260,6 +309,11 @@ void OpenGLInterop::prepare_shared_resources()
 		                                                          0, 1};
 		vkCreateImageView(deviceHandle, &viewCreateInfo, nullptr, &sharedTexture.view);
 
+#if VK_USE_PLATFORM_ANDROID_KHR
+		VkSemaphore signalSemaphore = VK_NULL_HANDLE;
+#else
+		VkSemaphore signalSemaphore = sharedSync.gl_ready;
+#endif
 		with_command_buffer([&](VkCommandBuffer image_command_buffer) {
 			VkImageMemoryBarrier image_memory_barrier  = vkb::initializers::image_memory_barrier();
 			image_memory_barrier.image                 = sharedTexture.image;
@@ -281,7 +335,7 @@ void OpenGLInterop::prepare_shared_resources()
 			    0, nullptr,
 			    1, &image_memory_barrier);
 		},
-		                    sharedSemaphores.gl_ready);
+		                    signalSemaphore);
 	}
 }
 
@@ -565,22 +619,28 @@ bool OpenGLInterop::prepare(vkb::Platform &platform)
 
 	// Create the GL identifiers
 
-	// semaphores
-	glGenSemaphoresEXT(1, &gl_data->gl_ready);
+#if !VK_USE_PLATFORM_ANDROID_KHR
+    glGenSemaphoresEXT(1, &gl_data->gl_ready);
 	glGenSemaphoresEXT(1, &gl_data->gl_complete);
+#endif
+
 	// memory
 	glCreateMemoryObjectsEXT(1, &gl_data->mem);
 
 	// Platform specific import.
+#if !VK_USE_PLATFORM_ANDROID_KHR
 	glImportSemaphore(gl_data->gl_ready, GL_HANDLE_TYPE, shareHandles.gl_ready);
 	glImportSemaphore(gl_data->gl_complete, GL_HANDLE_TYPE, shareHandles.gl_complete);
+#endif
+
 	glImportMemory(gl_data->mem, sharedTexture.allocationSize, GL_HANDLE_TYPE, shareHandles.memory);
 
 	// Use the imported memory as backing for the OpenGL texture.  The internalFormat, dimensions
 	// and mip count should match the ones used by Vulkan to create the image and determine it's memory
 	// allocation.
-	glTextureStorageMem2DEXT(gl_data->color, 1, GL_RGBA8, SHARED_TEXTURE_DIMENSION,
-	                         SHARED_TEXTURE_DIMENSION, gl_data->mem, 0);
+	glTexStorageMem2DEXT(GL_TEXTURE_2D, 1, GL_RGBA8, SHARED_TEXTURE_DIMENSION,
+                             SHARED_TEXTURE_DIMENSION, gl_data->mem, 0);
+
 	glBindTexture(GL_TEXTURE_2D, 0);
 
 	// The remaining initialization code is all standard OpenGL
@@ -621,15 +681,37 @@ void OpenGLInterop::render(float)
 
 	// Wait (on the GPU side) for the Vulkan semaphore to be signaled
 	GLenum srcLayout = GL_LAYOUT_COLOR_ATTACHMENT_EXT;
-	glWaitSemaphoreEXT(gl_data->gl_ready, 0, nullptr, 1, &gl_data->color, &srcLayout);
+
+#if VK_USE_PLATFORM_ANDROID_KHR
+
+	// Note: The first time render is called we will not have a valid semaphore from vulkan
+	if(gl_data->gl_ready != nullptr)
+	{
+		if (eglWaitSync(gl_context->get_context().display, gl_data->gl_ready, 0) != EGL_TRUE)
+		{
+			throw;
+        }
+
+		// gl_data->gl_ready actual deletion will be delayed internally until it's waited
+        eglDestroySync(gl_context->get_context().display, gl_data->gl_ready);
+    }
+#else
+        glWaitSemaphoreEXT(gl_data->gl_ready, 0, nullptr, 1, &gl_data->color, &srcLayout);
+#endif
 
 	// Draw to the framebuffer
 	glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
+
+#if !VK_USE_PLATFORM_ANDROID_KHR
 	// Once drawing is complete, signal the Vulkan semaphore indicating
 	// it can continue with it's render
 	GLenum dstLayout = GL_LAYOUT_SHADER_READ_ONLY_EXT;
 	glSignalSemaphoreEXT(gl_data->gl_complete, 0, nullptr, 1, &gl_data->color, &dstLayout);
+#else
+	// Create a sync object so we can wait on it before continuing with Vulkan
+	GLsync frameSync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+#endif
 
 	// When using synchronization across multiple GL context, or in this case
 	// across OpenGL and another API, it's critical that an operation on a
@@ -643,10 +725,28 @@ void OpenGLInterop::render(float)
 	glFlush();
 	// RENDER
 
-	std::array<VkPipelineStageFlags, 2> waitStages{{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT}};
-	std::array<VkSemaphore, 2>          waitSemaphores{{semaphores.acquired_image_ready, sharedSemaphores.gl_complete}};
+#if VK_USE_PLATFORM_ANDROID_KHR
 
-	std::array<VkSemaphore, 2> signalSemaphores{{semaphores.render_complete, sharedSemaphores.gl_ready}};
+	glWaitSync(frameSync, GL_SYNC_FLUSH_COMMANDS_BIT, GLuint64(-1));
+
+	// frameSync actual deletion will be delayed internally until it's waited
+	glDeleteSync(frameSync);
+
+	VkExportSemaphoreCreateInfoKHR exportSemaphoreInfo{VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO_KHR, 
+		NULL, external_semaphore_handle_type};
+    VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &exportSemaphoreInfo};
+	VK_CHECK(vkCreateSemaphore(device->get_handle(), &semaphoreInfo, NULL, &sharedSync.gl_ready));
+
+	std::array<VkPipelineStageFlags, 1> waitStages{{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT}};
+	std::array<VkSemaphore, 1>			waitSemaphores{{semaphores.acquired_image_ready}};
+	std::array<VkSemaphore, 2>          signalSemaphores{{semaphores.render_complete, sharedSync.gl_ready}};
+
+#else
+	std::array<VkPipelineStageFlags, 2> waitStages{{VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT}};
+	std::array<VkSemaphore, 2>          waitSemaphores{{semaphores.acquired_image_ready, sharedSync.gl_complete}};
+	std::array<VkSemaphore, 2>			signalSemaphores{{semaphores.render_complete, sharedSync.gl_ready}};
+#endif
+
 	// Command buffer to be sumitted to the queue
 	submit_info.waitSemaphoreCount   = vkb::to_u32(waitSemaphores.size());
 	submit_info.pWaitSemaphores      = waitSemaphores.data();
@@ -660,6 +760,31 @@ void OpenGLInterop::render(float)
 	VK_CHECK(vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
 
 	ApiVulkanSample::submit_frame();
+
+#if VK_USE_PLATFORM_ANDROID_KHR
+	{
+		VkSemaphoreGetFdInfoKHR getFDInfo{VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR, NULL, 
+			sharedSync.gl_ready, external_semaphore_handle_type};
+		VK_CHECK(vkGetSemaphoreFdKHR(device->get_handle(), &getFDInfo, &shareHandles.gl_ready));
+
+        EGLAttrib vSyncAttribs[] =
+        {
+                EGL_SYNC_NATIVE_FENCE_FD_ANDROID, 
+				(EGLint)shareHandles.gl_ready,
+                EGL_NONE,
+        };
+
+        gl_data->gl_ready = eglCreateSync(gl_context->get_context().display, EGL_SYNC_NATIVE_FENCE_ANDROID, vSyncAttribs);
+		if (gl_data->gl_ready == EGL_NO_SYNC_KHR)
+        {
+			throw;
+        }
+
+        vkDestroySemaphore(device->get_handle(), sharedSync.gl_ready, nullptr);
+        sharedSync.gl_ready = VK_NULL_HANDLE;
+	}
+
+#endif
 }
 
 void OpenGLInterop::view_changed()
@@ -781,8 +906,17 @@ OpenGLInterop::~OpenGLInterop()
 		glUseProgram(0);
 		glDeleteFramebuffers(1, &gl_data->fbo);
 		glDeleteTextures(1, &gl_data->color);
+
+#if VK_USE_PLATFORM_ANDROID_KHR
+		if(gl_data->gl_ready != nullptr)
+		{
+			eglDestroySync(gl_context->get_context().display, gl_data->gl_ready);
+		}
+#else
 		glDeleteSemaphoresEXT(1, &gl_data->gl_ready);
 		glDeleteSemaphoresEXT(1, &gl_data->gl_complete);
+#endif
+
 		glDeleteVertexArrays(1, &gl_data->vao);
 		glDeleteProgram(gl_data->program);
 		glFlush();
@@ -801,8 +935,14 @@ OpenGLInterop::~OpenGLInterop()
 	{
 		device->wait_idle();
 		auto deviceHandle = device->get_handle();
-		vkDestroySemaphore(deviceHandle, sharedSemaphores.gl_ready, nullptr);
-		vkDestroySemaphore(deviceHandle, sharedSemaphores.gl_complete, nullptr);
+
+#if VK_USE_PLATFORM_ANDROID_KHR
+		vkDestroySemaphore(deviceHandle, sharedSync.gl_ready, nullptr);
+#else
+		vkDestroySemaphore(deviceHandle, sharedSync.gl_ready, nullptr);
+		vkDestroySemaphore(deviceHandle, sharedSync.gl_complete, nullptr);
+#endif
+
 		vkDestroyImage(deviceHandle, sharedTexture.image, nullptr);
 		vkDestroySampler(deviceHandle, sharedTexture.sampler, nullptr);
 		vkDestroyImageView(deviceHandle, sharedTexture.view, nullptr);

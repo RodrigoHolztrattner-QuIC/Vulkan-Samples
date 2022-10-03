@@ -88,11 +88,16 @@ class OpenGLInterop : public ApiVulkanSample
 		VkImageView    view{VK_NULL_HANDLE};
 	} sharedTexture;
 
-	struct Semaphores
+	struct SharedSync
 	{
+#if VK_USE_PLATFORM_ANDROID_KHR
+		VkFence     gl_ready{VK_NULL_HANDLE};
+#else
 		VkSemaphore gl_ready{VK_NULL_HANDLE};
 		VkSemaphore gl_complete{VK_NULL_HANDLE};
-	} sharedSemaphores;
+#endif
+
+	} sharedSync;
 
 	std::unique_ptr<vkb::core::Buffer> vertex_buffer;
 	std::unique_ptr<vkb::core::Buffer> index_buffer;
@@ -111,6 +116,11 @@ class OpenGLInterop : public ApiVulkanSample
 	VkPipelineLayout      pipeline_layout{VK_NULL_HANDLE};
 	VkDescriptorSet       descriptor_set{VK_NULL_HANDLE};
 	VkDescriptorSetLayout descriptor_set_layout{VK_NULL_HANDLE};
+
+	VkExternalSemaphoreHandleTypeFlagBits external_semaphore_handle_type{};
+#if VK_USE_PLATFORM_ANDROID_KHR
+	VkExternalFenceHandleTypeFlagBits     external_fence_handle_type{};
+#endif
 };
 
 std::unique_ptr<vkb::VulkanSample> create_open_gl_interop();

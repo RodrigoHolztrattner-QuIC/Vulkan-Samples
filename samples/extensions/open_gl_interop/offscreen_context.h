@@ -36,6 +36,7 @@ constexpr const char *HOST_SEMAPHORE_EXTENSION_NAME = VK_KHR_EXTERNAL_SEMAPHORE_
 #else
 constexpr const char *HOST_MEMORY_EXTENSION_NAME    = VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME;
 constexpr const char *HOST_SEMAPHORE_EXTENSION_NAME = VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME;
+constexpr const char *HOST_FENCE_EXTENSION_NAME     = VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME;
 #	define glImportSemaphore glImportSemaphoreFdEXT
 #	define glImportMemory glImportMemoryFdEXT
 #	define GL_HANDLE_TYPE GL_HANDLE_TYPE_OPAQUE_FD_EXT
@@ -75,6 +76,11 @@ class OffscreenContext
 
 	// Shared
 	GLuint build_program(const char *vertex_shader_source, const char *fragment_shader_source);
+
+	ContextData& get_context()
+	{
+		return data;
+	}
 
   private:
 	// Platform specific
