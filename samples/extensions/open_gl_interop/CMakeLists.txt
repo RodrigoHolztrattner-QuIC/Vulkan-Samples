@@ -59,8 +59,6 @@ if (NOT DIRECT_TO_DISPLAY)
             "opengl"
         LIBS
             glad
-            EGL
-            GLESv2
         FILES
             offscreen_context.h
             offscreen_context.cpp
